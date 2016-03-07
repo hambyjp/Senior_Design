@@ -3,7 +3,8 @@
  *
  * Created: 1/20/2016 11:40:53 PM
  *  Author: hambyje
- */ 
+ */
+ 
 #define F_CPU			0x00		//16MHz
 //source code dependencies
 #include <avr/io.h>
@@ -13,26 +14,31 @@
 #include <string.h>
 #include <stdlib.h>
 
-
+// PINB0 key pin on GSM (active low output)
+// PINB1 resistor sensor enable (active low output)
+// PINB7 pole 1 control (active high output)
+// PINB6 pole 2 control (active high output)
+// PINB3 over_voltage detect (active low input)
 #define AREF	(1<<REFS0)			//uses Vcc as ref voltage (5V is maximum value to be read). write this to ADMUX
-#define IN_PIN1	(1<<MUX2)			//sets PINF4 as input pin for ADC.  write this to ADMUX
-#define IN_PIN2 (1<<MUX2)|(1<<MUX0) //sets PINF5 as input pin for ADC.  write this to ADMUX
-#define CTRL_PIN0 (1<<PINB3)		//output
-#define CTRL_PIN1 (1<<PINB4)		//output
-#define RES_SENS_EN (1<<PINC7)		//output
-#define GSM_ON	(1<<PINB0)			//output
+#define POLE1	(1<<MUX2)			//sets PINF4 as input pin for ADC.  write this to ADMUX
+#define POLE2 (1<<MUX2)|(1<<MUX0)	//sets PINF5 as input pin for ADC.  write this to ADMUX
+#define CTRL_1 (1<<PINB7)			
+#define CTRL_2 (1<<PINB6)			
+#define RES_SENS_EN (1<<PINB1)		
+#define GSM_ON	(1<<PINB0)			
+#define OV_DETECT (1<<PINB3)		//used for masking (this is input pin)
 
 
-//UART receive byte definitions
-#define LIGHT_1_CTRL_ON	 0xF1
-#define LIGHT_1_CTRL_OFF 0xF0
-#define LIGHT_2_CTRL_ON  0x1F
-#define LIGHT_2_CTRL_OFF 0x0F
-#define LIGHTS_ON		 0xFF
-#define LIGHTS_OFF		 0x11
-#define LIGHT_1_RES_REQ	 0xF7	//if one of these bytes are received with a light identifier do appropriate action
-#define LIGHT_2_RES_REQ  0x7F
-#define LIGHTS_RES_REQ   0x77	//if this byte is received, send a resistance measurement from both lights
+//UART receive byte definitions; A-I in ascii
+#define LIGHT_1_CTRL_ON	 0x41
+#define LIGHT_1_CTRL_OFF 0x42
+#define LIGHT_2_CTRL_ON  0x43
+#define LIGHT_2_CTRL_OFF 0x44
+#define LIGHTS_ON		 0x45
+#define LIGHTS_OFF		 0x46
+#define LIGHT_1_RES_REQ	 0x47	//if one of these bytes are received with a light identifier do appropriate action
+#define LIGHT_2_RES_REQ  0x48
+#define LIGHTS_RES_REQ   0x49	//if this byte is received, send a resistance measurement from both lights
 
 
 //used for setting clock speed
@@ -48,23 +54,35 @@
 #define CPU_62kHz       0x08
 #define BAUD	103					//baud rate of 9600: determined from data sheet
 
-uint8_t flag = 0;				//recieve status (when ISR(receive_vector) is processed then flag gets set)
-										//should reset flag in main after designed routine is processed
-char data_received[100];				//control word received from GSM--used to determine case for switch statement (state machine)
+const char pole_1[] = "00000000";	//pole identifiers; send before sending data
+const char pole_2[] = "00000001";	
+const char bad_res[] = "bad";			//send before pole identifier
+const char light_status[] = "status";		//send before pole identifier
+const char at[] = "AT";				//to get OK response
+const char text_mode[] = "AT+CMGF=1";	//to set text mode
+const char full_text[] = "AT+CSDH=1";	//to display full text information
+const char delete_all[] = "AT+CMGDA=\"DEL ALL\"";	//to delete all text
+const char no_echo[] = "ATE0";		//turn off echo
+const char reg_1[] = "AT+CMGR=1";	//to access register 1 text
+const char num_cmd[] = "AT+CMGS=";	//phone number should follower this string
+const char num[] = "\"15412559226\"";//phone number to send text to
+const char ip[] = "";
 
+const uint8_t carr_rtn = 0x0D;		//must use after every command
+const uint8_t ctrl_z = 0x1A;		//after data entry when sending sms
+
+uint8_t flag = 0;					//recieve status (when ISR(receive_vector) is processed then flag gets set)										//should reset flag in main after designed routine is processed
+char data_received[100];			//control word received from GSM--used to determine case for switch statement (state machine)
+uint8_t ind = 0;					//used for indexing through array in ISR
 uint32_t count = 0;					//used for the delay_functions described below
+char data_ascii[8];					//used to send data in character form
 
-uint8_t ind = 0;				//used for indexing through array in ISR
 
-char cmd_reg = '\0';
-
-char cmd_word = '\0';
-
-const uint8_t carr_rtn = 0x0D;  //must use after every command
-const uint8_t ctrl_z = 0x1A;	//after datat entry when sending sms
 /************************delay_functions*****************************************/
 /********************************************************************************/
-
+/********************************************************************************/
+/********************************************************************************/
+/********************************************************************************/
 
 void delay_1s()
 {
@@ -119,26 +137,37 @@ void delay_10m()
 
 /*****************************Configure IO **************************************/
 /********************************************************************************/
+/********************************************************************************/
+/********************************pin outs for teensy*****************************/
+// PINB0 key pin on GSM (active low output)
+// PINB1 resistor sensor enable (active low output)
+// PINB7 pole 1 control (active high output)
+// PINB6 pole 2 control (active high output)
+// PINB3 over_voltage detect (active low input)
+/********************************************************************************/
+/********************************************************************************/
+/********************************************************************************/
 
-//sensor enable dependent on sensor input from comparator
-void init_output_enable()
+/*****************************digital IO*****************************************/
+/********************************************************************************/
+void init_dio()
 {
-	DDRB = 0xFF;	//all portB pins are now outputs
-	PORTB = 0x01;	//all portB pins are low state (~0v) except key pin for GSM	
+	DDRB = ~(1<<PINB3);				//1-->output, 0-->input
+	PORTB = (1<<PINB0)|(1<<PINB1);	//1-->high, 0-->low	
 }
 
-//initialize input for comparator
-void init_ov_detect()
-{
-	DDRC = 0x00;	//all port C pins are now inputs
-	PORTC = 0x00;  //high Z tri-state (won't source current when pulled low :)
-}
 /********************************************************************************/
 /********************************************************************************/
 
 
 
 /*****************************ADC Configuration**********************************/
+/********************************************************************************/
+/********************************pin outs for teensy*****************************/
+// PINF4 pole 1 resistor (analog input)
+// PINF5 pole 2 resistor (analog input)
+/********************************************************************************/
+/********************************************************************************/
 /********************************************************************************/
 
 //initialize ADC
@@ -196,6 +225,12 @@ void change_input_ADC(uint8_t new_input)
 
 
 /****************************UART Configuration**********************************/
+/********************************************************************************/
+/********************************pin outs for teensy*****************************/
+// PIND3 Tx	(USART)
+// PIND2 Rx	(USART)
+/********************************************************************************/
+/********************************************************************************/
 /********************************************************************************/
 
 //initialize Tx/Rx pins
@@ -277,38 +312,19 @@ ISR(USART1_RX_vect)
 
 
 /******************************GSM functions*************************************/
-
-
-/********************************Function for SMS call***************************/
-/********************************************************************************/
-
-void send_sms(char *at, char *no_echo, char *init_sms, char *phone_num, char *msg, uint8_t ctrl_z){
-	delay_2s();
-	Tx_USART_ram_data(at);
-	Tx_USART(carr_rtn);
-	delay_2s();
-	Tx_USART_ram_data(no_echo);
-	Tx_USART(carr_rtn);
-	delay_2s();
-	Tx_USART_ram_data(init_sms);
-	Tx_USART(carr_rtn);
-	delay_2s();
-	Tx_USART_ram_data(phone_num);
-	Tx_USART(carr_rtn);
-	delay_2s();
-	Tx_USART_ram_data(msg);
-	delay_2s();
-	Tx_USART(ctrl_z);
-	delay_2s();
-}
-
 /********************************************************************************/
 /********************************************************************************/
+/********************************************************************************/
+
 
 /******************************Function for IP data send*************************/
 /********************************************************************************/
 
-void send_data(){}
+void send_data_url(char *ip_2, char *control_2, char *data_2)
+{
+	
+}
+
 
 /********************************************************************************/
 /********************************************************************************/
@@ -319,10 +335,14 @@ void send_data(){}
 void on_gsm(){
 	//turn on gsm module
 	PORTB &= ~GSM_ON;
-	delay_2s();
-	delay_2s();				//requires a 2sec low on key pin to turn on
+	delay_2s();			//requires a 2sec low on key pin to turn on
 	delay_500m();
 	PORTB |= GSM_ON;
+	delay_2s();			//wait long time for power on notifications and sms notifications
+	delay_2s();
+	delay_2s();
+	delay_2s();	
+	ind = 0;			//reset after notifications
 }
 
 /********************************************************************************/
@@ -332,11 +352,11 @@ void on_gsm(){
 /********************************************************************************/
 void echo_off()
 {
-	Tx_USART_ram_data("ATE0");			//turn off echo
+	Tx_USART_ram_data(no_echo);			//turn off echo
 	delay_10m();
 	Tx_USART(carr_rtn);
 	delay_500m();
-	strcpy(data_received, "\0");
+	//strcpy(data_received, "\0");
 	ind = 0;
 }
 
@@ -347,19 +367,18 @@ void echo_off()
 
 /***************************send data through sms *******************************/
 /********************************************************************************/
-
+//be sure to set text mode before use
 void send_data_sms(uint8_t data)
 {
-	Tx_USART_ram_data("AT+CMGF=1");
-	Tx_USART(carr_rtn);
-	delay_10m();
-	Tx_USART_ram_data("AT+CMGS=\"15412559226\"");
+	Tx_USART_ram_data(num_cmd);
+	Tx_USART_ram_data(num);
 	Tx_USART(carr_rtn);
 	delay_10m();
 	Tx_USART(data);
 	delay_10m();
 	Tx_USART(ctrl_z);
 	delay_1s();
+	ind = 0;
 }
 
 /********************************************************************************/
@@ -369,13 +388,14 @@ void send_data_sms(uint8_t data)
 /********************************************************************************/
 void set_Textmode()
 {
-	Tx_USART_ram_data("AT+CMGF=1");
+	ind = 0;
+	Tx_USART_ram_data(text_mode);
 	Tx_USART(carr_rtn);
-	delay_10m();
-	Tx_USART_ram_data("AT+CSDH=1");
+	delay_100m();
+	ind = 0;
+	Tx_USART_ram_data(full_text);
 	Tx_USART(carr_rtn);
-	delay_10m();
-	
+	delay_100m();
 }
 /********************************************************************************/
 /********************************************************************************/
@@ -386,12 +406,12 @@ void set_Textmode()
 uint8_t pwr_chkGSM()
 {
 	ind = 0;
-	strcpy(data_received, "\0");
-	Tx_USART_ram_data("AT");
+	Tx_USART_ram_data(at);
 	Tx_USART(carr_rtn);
-	delay_1s();			//wait for transmition to complete
+	delay_1s();			//wait for receive to complete
 	if(data_received[2]=='O')	
 	{
+		ind = 0;
 		return 1;
 	}
 	return 0; //TEE HEE >:( -- Bear was here!
@@ -405,9 +425,8 @@ uint8_t pwr_chkGSM()
 //be in text mode before calling this
 void delete_sms()
 {	
-	strcpy(data_received, "\0");
 	ind = 0;
-	Tx_USART_ram_data("AT+CMGDA=\"DEL ALL\"");
+	Tx_USART_ram_data(delete_all);
 	Tx_USART(carr_rtn);
 	delay_2s();		//max response time
 	delay_2s();
@@ -417,13 +436,14 @@ void delete_sms()
 
 /***********************************read SMS*************************************/
 /********************************************************************************/
-
+//be sure to delete all messages initially (when unit powers on)
+//this means there won't be any saved commands.
+//also be sure to run set_textmode as well
 void read_SMS()
 {
-	strcpy(data_received, "\0");
 	ind = 0;
-	Tx_USART_ram_data("AT+CMGR=");
-	Tx_USART(0x31);  //sending a 1 for accessing register 1
+	strcpy(data_received, "\0");	//must use for get_ctrl()'s strrchr() ref.
+	Tx_USART_ram_data(reg_1); //accessing register 1
 	Tx_USART(carr_rtn);
 }
 
@@ -432,6 +452,7 @@ void read_SMS()
 
 /*************************get control from SMS***********************************/
 /********************************************************************************/
+//run directly after read_sms to get a ctrl word.
 char* get_ctrl()
 {
 	char *place;
@@ -442,159 +463,210 @@ char* get_ctrl()
 /********************************************************************************/
 /********************************************************************************/
 
-// so far this uses PINF4 and PINF5 for analog inputs
-// PIND3 for transmit out
+/**************************Data Manipulation*************************************/
+/********************************************************************************/
+/********************************************************************************/
+/********************************************************************************/
+
+
+
+/******************************Binary to ASCII***********************************/
+/********************************************************************************/
+//data is initially pointing to first element of data array
+char * bin_ascii(uint8_t data)
+{
+	uint8_t temp;
+	int i;
+	for(i = 0; i<8; i++)
+	{
+		temp = data;	
+		temp &= (1<<i);
+		if(temp)
+			data_ascii[i] = '1';
+		data_ascii[i] = '0';
+		temp++;
+	}
+	return data_ascii;
+}
+
+/********************************************************************************/
+/********************************************************************************/
+
+
+/********************************pin outs for teensy*****************************/
+// PINF4 pole 1 resistor (analog input) 
+// PINF5 pole 2 resistor (analog input)
+// PIND3 Tx	(USART)
+// PIND2 Rx	(USART)
+// PINB0 key pin on GSM (active low output)
+// PINB1 resistor sensor enable (active low output)
+// PINB7 pole 1 control (active high output)
+// PINB6 pole 2 control (active high output)
+// PINB3 over_voltage detect (active low input)
+/********************************************************************************/
+
 int main(void)
 {
-	//holds adc data
-	uint8_t adc_data_ch1;
-	uint8_t adc_data_ch2;
-	uint8_t ch_1 = 1;
-	uint8_t ch_2 = 0;
-	char at[3] = {"AT"};		//use to auto configure baud rate (9600)
-	char init_sms[10] = {"AT+CMGF=1"};
-	char phone_num[22] = {"AT+CMGS=\"15415252700\""};
-	char msg[15] = {"data"};
-	char no_echo[5] = {"ATE0"};
-	
-	char *cmd;
+	uint8_t data_ch1;	//holds adc data
+	uint8_t data_ch2;	//holds adc data
+	char cmd_reg = '\0';	//register where sms is
+	char cmd_word = '\0';	//data in text (a command word)
+	char *cmd;				//command text
 	uint8_t point;
-	//int i = 0;				//used for testing
-	
+	int i = 0;				//used for looping
+	uint8_t ov_detect;
+	char *data1;
+	char *data2;
 	//setting CPU to 16Mhz.
-	CPU_PRESCALE(CPU_16MHz);		
+	CPU_PRESCALE(CPU_16MHz);
+	//initialize I/O		
+	init_dio();
+	//initialize ADC
+	init_ADC(POLE1);					//pinf4
+	noise_cancel_ADC();
 	
-	//grab readings from both sensors
-	//use to test ADC
-	init_ADC(IN_PIN1);  //pinf4
-	//noise_cancel_ADC();
 	
-	//change_input_ADC(IN_PIN2);
-	//adc_data_ch2 = read_ADC();
-	
-	//SMCR |= (0<<SE);					//turning off noise reduction mode
-	//ADCSRA = (0<<ADEN);					//turning off ADC
+	//SMCR |= (0<<SE);					//turning off noise reduction mode maybe??
 	strcpy(data_received, "\0");        //initial data buffer set to null
-	init_output_enable();
 	init_USART(BAUD);					//baud==103 for baud rate set to 9600
-	sei();
-	echo_off();							//keeps gsm from echoing every character also reset data_received
-										//and ind=0 with in function
-									
-	if (pwr_chkGSM())					//checking if GSM is on, if not it will turn it back on
+	sei();								//ready to receive interrupts
+	
+	if (!pwr_chkGSM())					//checking if GSM is on, if not it will turn it back on
 	{
-		while(0){}
+		on_gsm();						
+		echo_off();
+		ind = 0;
 	}
 	else
-	{
-		on_gsm();
-	}
+		echo_off();						//keeps gsm from echoing every character also reset data_received
 	
-	//initially deletes all messages (will do so after every sms message received)
-	delete_sms();
-	uint8_t size = strlen(data_received);
-	while(1){
-		Tx_USART(size);
-		Tx_USART(data_received[2]);
-		}  //testing incrementally
-	//delay_10m();
-	//set_Textmode();
-	//delay_10m();
-	//delete_sms();
-	//delay_10m();
-	//strcpy(data_received, "\0");
+	set_Textmode();
+	delete_sms();						//delete any commands received while off
+	ind = 0;							//in case text notifications received
+	
+	//sending 10 data samples for each resistance
+	for (i=0; i<10; i++)
+	{
+		change_input_ADC(POLE1);
+		ov_detect = PINB;
+		ov_detect &= OV_DETECT;			//masking out the over voltage detect
+		if (ov_detect)
+		{
+			PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
+			send_data_url(ip, bad_res, pole_1);
+		}
+		data_ch1 = read_ADC();
+		change_input_ADC(POLE2);		//pinf5
+		data_ch2 = read_ADC();
+		
+		data1 = bin_ascii(data_ch1);	//converting to ascii string 0b"xxxxxxxx"
+		data2 = bin_ascii(data_ch2);
+		send_data_url(ip, pole_1, data1);
+		send_data_url(ip, pole_2, data2);
+	}
 
-	//while(1)
-	//{	
-		//if(strlen(data_received) > 14)
-		//{
-			//cmd_reg = data_received[12];  //location in sms received reply string with data register location
-			//if(cmd_reg == '1')
-			//{
-				//while(1){
-				//Tx_USART(cmd_reg);  //comment out after testing functionality is complete
-				//}
-				//ind = 0;
-				//strcpy(data_received, "\0");
-				//read_SMS();
-			//}
-		//
-		//}
-		//else if(strlen(data_received) > 97)
-		//{
-			//cmd = get_ctrl();
-			//cmd_word = *cmd;
-			//if((cmd_word > 64 && cmd_word < 71) || (cmd_word > 96 && cmd_word < 103)) //checking if actual cmd_word
-			//{
-				//Tx_USART(cmd_word);
-				//delete_sms();
-				//ind = 0;
-				//strcpy(data_received, "\0");
-				//
-			//}
-			////state_machine(cmd_word);  //be sure to turn off then on interrupts in state machine
-		//}
-		//
-		//TESTING RECEIVE INTERRUPT ROUTINE FUNCTIONALITY
-		//tie PINB1 to Rx PIND2
-		//while (i < 8){
-		//PORTB ^= (1<<PINB1);
-		//_delay_loop_1(0xFF);
-		//_delay_loop_1(0xFF);
-		//_delay_loop_1(0xFF);
-		//i++;
-		//}
-		//i = 0;
-		//
-		//testing if ISR for receive vector was ran  will toggle if so (when PINB1(output) is tied to PIND2(Rx))
-		//if(flag == 0xFF)
-		//{
-			//PORTB ^= CTRL_PIN1;
-			//flag = 0x00;
-		//}
+									
+	//testing for ok response from gsm.. size should be 6 and data_received should be {CR,LF,O,K,CR,LF}
+	//uint8_t size = strlen(data_received);
+	//while(1){
+		//delay_1s();
+		//Tx_USART(size);				 //should be 0b0011000001 on OSCOPE
+		//Tx_USART(data_received[2]);  //should be 0b0111100101 on OSCOPE
+	//}  //testing incrementally
+	
+	while(1)
+	{	
+		ov_detect = PINB;
+		ov_detect &= OV_DETECT;			//masking out the over voltage detect
+		if (ov_detect)
+		{
+			PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
+			send_data_url(ip, bad_res, pole_1);
+		}
 		
-		
-		//TESTING ADC FUNCTIONALITY
-		//adc_data_ch1 = read_ADC();
-		//used to test if transmitting the correct voltage and ADC value
-		//Tx_USART(adc_data_ch1);
-		
-		/*********system level************state maching****************************/
-		//if(cmd_reg != '\0')
-		//{
-			//Tx_USART_ram_data(data_received);
-			//ind = 0;
-			//
-			//switch (data_received)
-			//{
-				//case LIGHT_1_CTRL_OFF:
-				////
-				//flag = 0;
-				//break;
-				//case LIGHT_1_CTRL_ON:
-				////
-				//flag = 0;
-				//break;
-				//case LIGHT_2_CTRL_OFF:
-				////
-				//break;
-				//case LIGHT_2_CTRL_ON:
-				////
-				//break;
-				//case LIGHTS_OFF:
-				////
-				//break;
-				//case LIGHTS_ON:
-				////
-				//break;
-				//case LIGHTS_RES_REQ:
-				////
-				//break;
-				//default:
-				////ERROR MESSAGE SENT TO WEB APPLICATION FOR BAD CONTROL WORD OR WORD NOT PROCESSED
-				//break;
-			//}
-		//}
-	//}
+		if(ind > 14 && ind < 20)
+		{
+			cmd_reg = data_received[12];  //location in sms received reply string with data register location
+			if(cmd_reg == '1')
+			{
+				read_SMS();
+				ind = 0;
+				cmd = get_ctrl();
+				cmd_word = *cmd;
+				if(cmd_word > 64 && cmd_word < 74)
+				{
+					delete_sms();
+					switch (cmd_word)
+					{
+						case LIGHT_1_CTRL_OFF:
+							PORTB &= ~CTRL_1;
+							send_data_url(ip, light_status, "1 OFF");
+							ind = 0;
+						break;
+						case LIGHT_1_CTRL_ON:
+							PORTB |= CTRL_1;
+							send_data_url(ip, light_status, "1 ON");
+							ind = 0;
+						break;
+						case LIGHT_2_CTRL_OFF:
+							PORTB &= ~CTRL_2;
+							send_data_url(ip, light_status, "2 OFF");
+							ind = 0;
+						break;
+						case LIGHT_2_CTRL_ON:
+							PORTB |= CTRL_2;
+							send_data_url(ip, light_status, "2 ON");
+							ind = 0;
+						break;
+						case LIGHTS_OFF:
+							PORTB &= ~CTRL_1;
+							send_data_url(ip, light_status, "1 OFF");
+							ind = 0;
+							PORTB &= ~CTRL_2;
+							send_data_url(ip, light_status, "2 OFF");
+							ind = 0;
+						break;
+						case LIGHTS_ON:
+							PORTB |= CTRL_1;
+							send_data_url(ip, light_status, "1 ON");
+							ind = 0;
+							PORTB |= CTRL_2;
+							send_data_url(ip, light_status, "2 ON");
+							ind = 0;
+						break;
+						case LIGHT_1_RES_REQ:
+							change_input_ADC(POLE1);
+							data_ch1 = read_ADC();
+							data1 = bin_ascii(data_ch1);
+							send_data_url(ip, pole_1, data1);
+							ind = 0;
+						break;
+						case LIGHT_2_RES_REQ:
+							change_input_ADC(POLE2);
+							data_ch2 = read_ADC();
+							data2 = bin_ascii(data_ch2);
+							send_data_url(ip, pole_2, data2);
+							ind = 0;
+						break;
+						case LIGHTS_RES_REQ:
+							change_input_ADC(POLE1);
+							data_ch1 = read_ADC();
+							data1 = bin_ascii(data_ch1);
+							send_data_url(ip, pole_1, data1);
+							ind = 0;
+							change_input_ADC(POLE2);
+							data_ch2 = read_ADC();
+							data2 = bin_ascii(data_ch2);
+							send_data_url(ip, pole_2, data2);
+							ind = 0;
+						break;
+						default:
+							Tx_USART_ram_data("SOS");
+						break;
+					}
+				}
+			}
+		}
+	}
 	return 0;
 }
