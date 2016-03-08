@@ -341,6 +341,8 @@ void on_gsm(){
 	delay_2s();			//wait long time for power on notifications and sms notifications
 	delay_2s();
 	delay_2s();
+	delay_2s();
+	delay_2s();
 	delay_2s();	
 	ind = 0;			//reset after notifications
 }
@@ -484,7 +486,6 @@ char * bin_ascii(uint8_t data)
 		if(temp)
 			data_ascii[i] = '1';
 		data_ascii[i] = '0';
-		temp++;
 	}
 	return data_ascii;
 }
@@ -534,12 +535,10 @@ int main(void)
 	if (!pwr_chkGSM())					//checking if GSM is on, if not it will turn it back on
 	{
 		on_gsm();						
-		echo_off();
 		ind = 0;
 	}
-	else
-		echo_off();						//keeps gsm from echoing every character also reset data_received
 	
+	echo_off();
 	set_Textmode();
 	delete_sms();						//delete any commands received while off
 	ind = 0;							//in case text notifications received
@@ -550,7 +549,7 @@ int main(void)
 		change_input_ADC(POLE1);
 		ov_detect = PINB;
 		ov_detect &= OV_DETECT;			//masking out the over voltage detect
-		if (ov_detect)
+		if (!ov_detect)
 		{
 			PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
 			send_data_url(ip, bad_res, pole_1);
@@ -578,7 +577,7 @@ int main(void)
 	{	
 		ov_detect = PINB;
 		ov_detect &= OV_DETECT;			//masking out the over voltage detect
-		if (ov_detect)
+		if (!ov_detect)
 		{
 			PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
 			send_data_url(ip, bad_res, pole_1);
@@ -600,64 +599,75 @@ int main(void)
 					{
 						case LIGHT_1_CTRL_OFF:
 							PORTB &= ~CTRL_1;
-							send_data_url(ip, light_status, "1 OFF");
+							//send_data_url(ip, light_status, "1 OFF");
+							Tx_USART_ram_data("L1F");
 							ind = 0;
 						break;
 						case LIGHT_1_CTRL_ON:
 							PORTB |= CTRL_1;
-							send_data_url(ip, light_status, "1 ON");
+							//send_data_url(ip, light_status, "1 ON");
+							Tx_USART_ram_data("L1O");
 							ind = 0;
 						break;
 						case LIGHT_2_CTRL_OFF:
 							PORTB &= ~CTRL_2;
-							send_data_url(ip, light_status, "2 OFF");
+							//send_data_url(ip, light_status, "2 OFF");
+							Tx_USART_ram_data("L2F");
 							ind = 0;
 						break;
 						case LIGHT_2_CTRL_ON:
 							PORTB |= CTRL_2;
-							send_data_url(ip, light_status, "2 ON");
+							//send_data_url(ip, light_status, "2 ON");
+							Tx_USART_ram_data("L2O");
 							ind = 0;
 						break;
 						case LIGHTS_OFF:
 							PORTB &= ~CTRL_1;
-							send_data_url(ip, light_status, "1 OFF");
+							//send_data_url(ip, light_status, "1 OFF");
 							ind = 0;
 							PORTB &= ~CTRL_2;
-							send_data_url(ip, light_status, "2 OFF");
+							//send_data_url(ip, light_status, "2 OFF");
+							Tx_USART_ram_data("LF");
 							ind = 0;
+							
 						break;
 						case LIGHTS_ON:
 							PORTB |= CTRL_1;
-							send_data_url(ip, light_status, "1 ON");
+							//send_data_url(ip, light_status, "1 ON");
 							ind = 0;
 							PORTB |= CTRL_2;
-							send_data_url(ip, light_status, "2 ON");
+							//send_data_url(ip, light_status, "2 ON");
+							Tx_USART_ram_data("LO");
 							ind = 0;
 						break;
 						case LIGHT_1_RES_REQ:
 							change_input_ADC(POLE1);
 							data_ch1 = read_ADC();
 							data1 = bin_ascii(data_ch1);
-							send_data_url(ip, pole_1, data1);
+							//send_data_url(ip, pole_1, data1);
+							Tx_USART(data_ch1);
 							ind = 0;
 						break;
 						case LIGHT_2_RES_REQ:
 							change_input_ADC(POLE2);
 							data_ch2 = read_ADC();
 							data2 = bin_ascii(data_ch2);
-							send_data_url(ip, pole_2, data2);
+							//send_data_url(ip, pole_2, data2);
+							Tx_USART(data_ch2);
 							ind = 0;
 						break;
 						case LIGHTS_RES_REQ:
 							change_input_ADC(POLE1);
 							data_ch1 = read_ADC();
 							data1 = bin_ascii(data_ch1);
-							send_data_url(ip, pole_1, data1);
+							//send_data_url(ip, pole_1, data1);
 							ind = 0;
 							change_input_ADC(POLE2);
 							data_ch2 = read_ADC();
 							data2 = bin_ascii(data_ch2);
-							send_data_url(ip, pole_2, data2);
+							//send_data_url(ip, pole_2, data2);
+							Tx_USART(data_ch1);
+							Tx_USART(data_ch2);
 							ind = 0;
 						break;
 						default:
