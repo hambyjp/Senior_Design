@@ -13,6 +13,7 @@
 #include <avr/interrupt.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 // PINB0 key pin on GSM (active low output)
 // PINB1 resistor sensor enable (active low output)
@@ -30,12 +31,12 @@
 
 
 //UART receive byte definitions; A-I in ascii
-#define LIGHT_1_CTRL_ON	 0x41
-#define LIGHT_1_CTRL_OFF 0x42
-#define LIGHT_2_CTRL_ON  0x43
-#define LIGHT_2_CTRL_OFF 0x44
-#define LIGHTS_ON		 0x45
-#define LIGHTS_OFF		 0x46
+#define LIGHT_1_CTRL_OFF 0x41
+#define LIGHT_1_CTRL_ON	 0x42
+#define LIGHT_2_CTRL_OFF 0x43
+#define LIGHT_2_CTRL_ON	 0x44
+#define LIGHTS_OFF		 0x45
+#define LIGHTS_ON		 0x46
 #define LIGHT_1_RES_REQ	 0x47	//if one of these bytes are received with a light identifier do appropriate action
 #define LIGHT_2_RES_REQ  0x48
 #define LIGHTS_RES_REQ   0x49	//if this byte is received, send a resistance measurement from both lights
@@ -153,7 +154,7 @@ void delay_10m()
 void init_dio()
 {
 	DDRB = ~(1<<PINB3);				//1-->output, 0-->input
-	PORTB = (1<<PINB0)|(1<<PINB1);	//1-->high, 0-->low	
+	PORTB = (1<<PINB0);				//1-->high, 0-->low	
 }
 
 /********************************************************************************/
@@ -303,7 +304,8 @@ uint8_t Rx_USART()
 ISR(USART1_RX_vect)
 {
 	data_received[ind] = UDR1;
-	ind++;
+	ind= ind + 1;
+	data_received[ind] = '\0';
 }
 
 /********************************************************************************/
@@ -355,9 +357,9 @@ void on_gsm(){
 void echo_off()
 {
 	Tx_USART_ram_data(no_echo);			//turn off echo
-	delay_10m();
+	//delay_10m();
 	Tx_USART(carr_rtn);
-	delay_500m();
+	delay_2s();
 	//strcpy(data_received, "\0");
 	ind = 0;
 }
@@ -444,9 +446,10 @@ void delete_sms()
 void read_SMS()
 {
 	ind = 0;
-	strcpy(data_received, "\0");	//must use for get_ctrl()'s strrchr() ref.
+	//strcpy(data_received, "\0");	//must use for get_ctrl()'s strrchr() ref.
 	Tx_USART_ram_data(reg_1); //accessing register 1
 	Tx_USART(carr_rtn);
+	delay_2s();
 }
 
 /********************************************************************************/
@@ -526,24 +529,96 @@ int main(void)
 	init_ADC(POLE1);					//pinf4
 	noise_cancel_ADC();
 	
-	
 	//SMCR |= (0<<SE);					//turning off noise reduction mode maybe??
-	strcpy(data_received, "\0");        //initial data buffer set to null
+	
 	init_USART(BAUD);					//baud==103 for baud rate set to 9600
+
 	sei();								//ready to receive interrupts
+	
+	Tx_USART(carr_rtn);					//incase of intermittent commands sent before
+	delay_2s();
+	echo_off();
+	delay_100m();
 	
 	if (!pwr_chkGSM())					//checking if GSM is on, if not it will turn it back on
 	{
-		on_gsm();						
+		on_gsm();	
+		Tx_USART(carr_rtn);
+		delay_2s();
 		ind = 0;
+		echo_off();				
+		//ind = 0;
 	}
+	echo_off();							//for some unknown reason... :(
 	
-	echo_off();
 	set_Textmode();
 	delete_sms();						//delete any commands received while off
 	ind = 0;							//in case text notifications received
 	
-	//sending 10 data samples for each resistance
+	/**************************TESTING TEXT RECEIVE*****************************************/
+	//**************************PASSED!!!!!!!!!!!!!*****************************************/
+	//testing receiving of text messages
+	//while(1)
+	//{
+		//Tx_USART(ind);
+		//if(ind > 13)
+		//{
+			//delay_2s();
+			//cmd_reg = data_received[14];  //location in sms received reply string with data register location
+			//if(cmd_reg == '1')			  //#include <string.h> and <stdio.h>... dope!
+				//{
+					//read_SMS();
+					//ind = 0;
+					//cmd = get_ctrl();
+					//cmd_word = *cmd;
+					//if(cmd_word > 64 && cmd_word < 74)
+					//{
+							//switch (cmd_word)
+							//{
+								//case LIGHT_1_CTRL_OFF:
+									//PORTB &= ~CTRL_1;
+									//send_data_url(ip, light_status, "1 OFF");
+									//delete_sms();
+									//ind = 0;
+									//break;
+								//case LIGHT_1_CTRL_ON:
+									//PORTB |= CTRL_1;
+									//send_data_url(ip, light_status, "1 ON");
+									//delete_sms();
+									//ind = 0;
+								//break;
+								//default:
+									//while(1)
+									//{
+										//delay_1s();
+										//Tx_USART(0xFF);
+									//}
+								//break;
+							//}
+					//}
+				//}
+			//
+//
+		//}
+	//}
+	/*****************************************************************************************/
+	
+	/**********************************for testing**********************************************/
+	//////testing for ok response from gsm.. size should be 6 and data_received should be {CR,LF,O,K,CR,LF}
+	////
+	//
+	//uint8_t size = strlen(data_received);
+	//while(1){
+		//delay_1s();
+		//Tx_USART(size);				 //should be 0b0011000001 on OSCOPE
+		//Tx_USART(data_received[2]);  //should be 0b0111100101 on OSCOPE
+	//}  //testing incrementally
+	/*********************************************************************************************/
+	
+	
+	//*************must have*************************************///
+	////sending 10 data samples for each resistance
+	//still need to confirm bin_ascii(data) (ie: 0b10101010 to char bin = "10101010")
 	for (i=0; i<10; i++)
 	{
 		change_input_ADC(POLE1);
@@ -563,115 +638,122 @@ int main(void)
 		send_data_url(ip, pole_1, data1);
 		send_data_url(ip, pole_2, data2);
 	}
-
-									
-	//testing for ok response from gsm.. size should be 6 and data_received should be {CR,LF,O,K,CR,LF}
-	//uint8_t size = strlen(data_received);
-	//while(1){
-		//delay_1s();
-		//Tx_USART(size);				 //should be 0b0011000001 on OSCOPE
-		//Tx_USART(data_received[2]);  //should be 0b0111100101 on OSCOPE
-	//}  //testing incrementally
+	//****************************************************************///
+	//
 	
+	//*********************************MAIN STATE MACHINE***************************************//
 	while(1)
-	{	
+	{
+		Tx_USART(ind);					//should be zero on oscope, lets you know when to send sms	
 		ov_detect = PINB;
 		ov_detect &= OV_DETECT;			//masking out the over voltage detect
+	
 		if (!ov_detect)
 		{
 			PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
 			send_data_url(ip, bad_res, pole_1);
 		}
 		
-		if(ind > 14 && ind < 20)
+		if(ind > 13)
 		{
-			cmd_reg = data_received[12];  //location in sms received reply string with data register location
+			cmd_reg = data_received[14];  //location in sms received reply string with data register location
 			if(cmd_reg == '1')
 			{
 				read_SMS();
 				ind = 0;
 				cmd = get_ctrl();
 				cmd_word = *cmd;
-				if(cmd_word > 64 && cmd_word < 74)
+				if(cmd_word > 64 && cmd_word < 74)  //A through I capitols matter!!!
 				{
 					delete_sms();
+					delay_2s();
 					switch (cmd_word)
 					{
 						case LIGHT_1_CTRL_OFF:
 							PORTB &= ~CTRL_1;
-							//send_data_url(ip, light_status, "1 OFF");
+							send_data_url(ip, light_status, "1 OFF");
 							Tx_USART_ram_data("L1F");
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHT_1_CTRL_ON:
 							PORTB |= CTRL_1;
-							//send_data_url(ip, light_status, "1 ON");
+							send_data_url(ip, light_status, "1 ON");
 							Tx_USART_ram_data("L1O");
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHT_2_CTRL_OFF:
 							PORTB &= ~CTRL_2;
-							//send_data_url(ip, light_status, "2 OFF");
+							send_data_url(ip, light_status, "2 OFF");
 							Tx_USART_ram_data("L2F");
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHT_2_CTRL_ON:
 							PORTB |= CTRL_2;
-							//send_data_url(ip, light_status, "2 ON");
+							send_data_url(ip, light_status, "2 ON");
 							Tx_USART_ram_data("L2O");
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHTS_OFF:
 							PORTB &= ~CTRL_1;
-							//send_data_url(ip, light_status, "1 OFF");
+							send_data_url(ip, light_status, "1 OFF");
 							ind = 0;
 							PORTB &= ~CTRL_2;
-							//send_data_url(ip, light_status, "2 OFF");
+							send_data_url(ip, light_status, "2 OFF");
 							Tx_USART_ram_data("LF");
+							delete_sms();
 							ind = 0;
-							
 						break;
 						case LIGHTS_ON:
 							PORTB |= CTRL_1;
-							//send_data_url(ip, light_status, "1 ON");
+							send_data_url(ip, light_status, "1 ON");
 							ind = 0;
 							PORTB |= CTRL_2;
-							//send_data_url(ip, light_status, "2 ON");
+							send_data_url(ip, light_status, "2 ON");
 							Tx_USART_ram_data("LO");
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHT_1_RES_REQ:
 							change_input_ADC(POLE1);
 							data_ch1 = read_ADC();
 							data1 = bin_ascii(data_ch1);
-							//send_data_url(ip, pole_1, data1);
+							send_data_url(ip, pole_1, data1);
 							Tx_USART(data_ch1);
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHT_2_RES_REQ:
 							change_input_ADC(POLE2);
 							data_ch2 = read_ADC();
 							data2 = bin_ascii(data_ch2);
-							//send_data_url(ip, pole_2, data2);
+							send_data_url(ip, pole_2, data2);
 							Tx_USART(data_ch2);
+							delete_sms();
 							ind = 0;
 						break;
 						case LIGHTS_RES_REQ:
 							change_input_ADC(POLE1);
 							data_ch1 = read_ADC();
 							data1 = bin_ascii(data_ch1);
-							//send_data_url(ip, pole_1, data1);
+							send_data_url(ip, pole_1, data1);
 							ind = 0;
 							change_input_ADC(POLE2);
 							data_ch2 = read_ADC();
 							data2 = bin_ascii(data_ch2);
-							//send_data_url(ip, pole_2, data2);
+							send_data_url(ip, pole_2, data2);
 							Tx_USART(data_ch1);
 							Tx_USART(data_ch2);
+							delete_sms();
 							ind = 0;
 						break;
 						default:
 							Tx_USART_ram_data("SOS");
+							delete_sms();
+							ind = 0;
 						break;
 					}
 				}
