@@ -17,29 +17,34 @@
 
 // PINB0 key pin on GSM (active low output)
 // PINB1 resistor sensor enable (active low output)
+// PINB2 resistor sensor enable (active low output)
 // PINB7 pole 1 control (active high output)
 // PINB6 pole 2 control (active high output)
 // PINB3 over_voltage detect (active low input)
+// PINB4 over voltage detect (active low input)
 #define AREF	(1<<REFS0)			//uses Vcc as ref voltage (5V is maximum value to be read). write this to ADMUX
 #define POLE1	(1<<MUX2)			//sets PINF4 as input pin for ADC.  write this to ADMUX
 #define POLE2 (1<<MUX2)|(1<<MUX0)	//sets PINF5 as input pin for ADC.  write this to ADMUX
 #define CTRL_1 (1<<PINB7)			
 #define CTRL_2 (1<<PINB6)			
-#define RES_SENS_EN (1<<PINB1)		
+#define RES_SENS_EN1 (1<<PINB1)
+#define RES_SENS_EN2 (1<<PINB2)		
 #define GSM_ON	(1<<PINB0)			
-#define OV_DETECT (1<<PINB3)		//used for masking (this is input pin)
-
+#define OV_DETECT11 (1<<PINB3)		//used for masking (this is input pin)
+#define OV_DETECT22 (1<<PINB4)
 
 //UART receive byte definitions; A-I in ascii
-#define LIGHT_1_CTRL_OFF 0x41
-#define LIGHT_1_CTRL_ON	 0x42
-#define LIGHT_2_CTRL_OFF 0x43
-#define LIGHT_2_CTRL_ON	 0x44
-#define LIGHTS_OFF		 0x45
-#define LIGHTS_ON		 0x46
-#define LIGHT_1_RES_REQ	 0x47	//if one of these bytes are received with a light identifier do appropriate action
-#define LIGHT_2_RES_REQ  0x48
-#define LIGHTS_RES_REQ   0x49	//if this byte is received, send a resistance measurement from both lights
+#define LIGHT_1_CTRL_ON			0x41	//A
+#define LIGHT_1_CTRL_OFF		0x42	//B	
+#define LIGHT_2_CTRL_ON			0x43	//C
+#define LIGHT_2_CTRL_OFF		0x44	//D
+#define LIGHTS_ON				0x45	//E
+#define LIGHTS_OFF				0x46	//F
+#define LIGHT2_ON_LIGHT1_OFF	0x47	//G
+#define LIGHT1_ON_LIGHT2_OFF	0x48	//H
+#define LIGHT_1_RES_REQ			0x49	//I  if one of these bytes are received with a light identifier do appropriate action
+#define LIGHT_2_RES_REQ			0x4A	//J
+#define LIGHTS_RES_REQ			0x4B	//K if this byte is received, send a resistance measurement from both lights
 
 
 //used for setting clock speed
@@ -60,6 +65,8 @@ const char pole_2[] = "POLE2";
 const char poles[] = "POLES";	
 const char bad_res[] = "bad";			//send before pole identifier
 const char light_status[] = "status";		//send before pole identifier
+const char init_status1[] = "init1";
+const char init_status2[] = "init2";
 const char at[] = "AT";				//to get OK response
 const char text_mode[] = "AT+CMGF=1";	//to set text mode
 const char full_text[] = "AT+CSDH=1";	//to display full text information
@@ -68,17 +75,34 @@ const char no_echo[] = "ATE0";		//turn off echo
 const char reg_1[] = "AT+CMGR=1";	//to access register 1 text
 const char num_cmd[] = "AT+CMGS=";	//phone number should follower this string
 const char num[] = "\"15412559226\"";//phone number to send text to
-const char ip[] = "";
+const char ip_stat1[] = "67.169.210.201:3000/update1";
+const char ip_stat2[] = "67.169.210.201:3000/update2";
+const char ip_data1[] = "67.169.210.201:3000/data1";
+const char ip_data2[] = "67.169.210.201:3000/data2";
+const char ip_initstat1[] = "67.169.210.201:3000/light1";			//use on start up, don't use again
+const char ip_initstat2[] = "67.169.210.201:3000/light2";			//use on strat up, don't use again
+const char ip_bad_contact1[] = "67.169.210.201:3000/update1conctact";			//send a zero ascii;
+const char ip_bad_contact2[] = "67.169.210.201:3000/update2conctact";			//send a zero ascii;
+const char con_gprs[] = "AT+SAPBR=3,1,Contype,GPRS";
+const char apn[] = "AT+SAPBR=3,1,APN,WHOLESALE";
+const char en_gprs[] = "AT+SAPBR=1,1";
+const char con_test[] = "AT+SAPBR=2,1";		//may not need
+const char en_http[] = "AT+HTTPINIT";
+const char set_profile[] = "AT+HTTPPARA=CID,1";
+const char url[] = "AT+HTTPPARA=URL,";	//Tx ip_x after this
+const char data_config[] = "AT+HTTPDATA=8,1500";
+const char post[] = "AT+HTTPACTION=1";
 
 const uint8_t carr_rtn = 0x0D;		//must use after every command
 const uint8_t ctrl_z = 0x1A;		//after data entry when sending sms
 
 uint8_t flag = 0;					//recieve status (when ISR(receive_vector) is processed then flag gets set)										//should reset flag in main after designed routine is processed
-char data_received[100];			//control word received from GSM--used to determine case for switch statement (state machine)
+char data_received[1000];			//control word received from GSM--used to determine case for switch statement (state machine)
 uint8_t ind = 0;					//used for indexing through array in ISR
 uint32_t count = 0;					//used for the delay_functions described below
 char data_ascii[8];					//used to send data in character form
 uint8_t one_shot = 0;
+uint8_t one_shot2 = 0;
 uint8_t data_ch1=2;	//holds adc data
 uint8_t data_ch2=2;	//holds adc data
 char temp1[8] = {"\0"};
@@ -148,9 +172,11 @@ void delay_10m()
 /********************************pin outs for teensy*****************************/
 // PINB0 key pin on GSM (active low output)
 // PINB1 resistor sensor enable (active low output)
+// PINB2 resistor sensor enable (active low output)
 // PINB7 pole 1 control (active high output)
 // PINB6 pole 2 control (active high output)
 // PINB3 over_voltage detect (active low input)
+// PINB4 over voltage detect (active low input)
 /********************************************************************************/
 /********************************************************************************/
 /********************************************************************************/
@@ -159,8 +185,8 @@ void delay_10m()
 /********************************************************************************/
 void init_dio()
 {
-	DDRB = ~(1<<PINB3);				//1-->output, 0-->input
-	PORTB = (1<<PINB0);				//1-->high, 0-->low	
+	DDRB = 0b11100111;				//1-->output, 0-->input
+	PORTB = GSM_ON;									//1-->high, 0-->low	
 }
 
 /********************************************************************************/
@@ -361,7 +387,42 @@ void bin_ascii(uint8_t data, char *data_t)
 /********************************************************************************/
 /********************************************************************************/
 
+/****************************************URL AT COMMANDS*************************/
+/********************************************************************************/
+void init_url(char *ip)
+{
+	Tx_USART_ram_data(con_gprs);
+	Tx_USART(carr_rtn);
+	delay_100m();
+	Tx_USART_ram_data(apn);
+	Tx_USART(carr_rtn);
+	delay_100m();
+	Tx_USART_ram_data(en_gprs);
+	Tx_USART(carr_rtn);
+	delay_100m();
+	Tx_USART_ram_data(con_test);
+	Tx_USART(carr_rtn);
+	delay_1s();
+	Tx_USART_ram_data(en_http);
+	Tx_USART(carr_rtn);
+	delay_100m();	
+	Tx_USART_ram_data(set_profile);
+	Tx_USART(carr_rtn);
+	delay_100m();
+	Tx_USART_ram_data(url);
+	Tx_USART_ram_data(ip);
+	Tx_USART(carr_rtn);
+	delay_100m();
+	Tx_USART_ram_data(data_config);
+	Tx_USART(carr_rtn);
+	delay_100m();
+	//still need to input data after function call
+	//still need to send a post command after data Tx.
+}
 
+
+/********************************************************************************/
+/********************************************************************************/
 
 /******************************Function for IP data send*************************/
 /********************************************************************************/
@@ -371,103 +432,145 @@ void send_data_url(char *control_2, char *data_2)
 	int i = 0;
 	if((strcmp(control_2, pole_1)==0))
 		{
-			//at commands go here 
-			/**********/
-			/**********/
 			init_ADC(POLE1);
 			data_ch1 = read_ADC();
 			bin_ascii(data_ch1, data1);
+			init_url(ip_data1);
 			for (i = 0; i <8; i++)
 			{
 				Tx_USART(data1[i]);
 			}
+			delay_2s();
+			Tx_USART_ram_data(post);
+			Tx_USART(carr_rtn);
+			delay_1s();
 		}
 	
 	if((strcmp(control_2, pole_2)==0))
 	{
-		//at commands go here
-		/**********/
-		/**********/
 		init_ADC(POLE2);
 		data_ch2 = read_ADC();
 		bin_ascii(data_ch2, data2);
+		init_url(ip_data2);
 		for (i = 0; i <8; i++)
 		{
 			Tx_USART(data2[i]);
 		}
-		
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 	}
 
 	if((strcmp(control_2, poles)==0))
 	{
-		//at commands go here
-		/**********/
-		/**********/
 		init_ADC(POLE1);
 		data_ch1 = read_ADC();
 		bin_ascii(data_ch1, data1);
 		init_ADC(POLE2);
 		data_ch2 = read_ADC();
 		bin_ascii(data_ch2, data2);
-		for (i = 0; i <8; i++)
-		{
-			Tx_USART(data1[i]);
-		}
+		init_url(ip_data2);
 		for (i = 0; i <8; i++)
 		{
 			Tx_USART(data2[i]);
 		}
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
+		init_url(ip_data2);
+		for (i = 0; i <8; i++)
+		{
+			Tx_USART(data2[i]);
+		}
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 		
 	}
 	
 	if((strcmp(control_2, bad_res)==0)&&(strcmp(data_2, pole_1)==0))
 	{
-		//at commands go here
-		/***********/
-		/***********/
-		Tx_USART_ram_data("BAD1");
+		init_url(ip_bad_contact1);
+		Tx_USART_ram_data("0");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
+		
 	}
 	if((strcmp(control_2, bad_res)==0)&&(strcmp(data_2, pole_2)==0))
 	{
-		//at commands go here
-		/***********/
-		/***********/
-		Tx_USART_ram_data("BAD2");
+		init_url(ip_bad_contact2);
+		Tx_USART_ram_data("0");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 	}
 	
 	if((strcmp(control_2, light_status)==0)&&(strcmp(data_2, pole_1)==0))
 	{
-		//at commands go here
-		/***********/
-		/***********/
-		Tx_USART_ram_data("L1ON");
+		init_url(ip_stat1);
+		Tx_USART_ram_data("true");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 	}	
 	
 	if((strcmp(control_2, light_status)==0)&&(strcmp(data_2, pole_2)==0))
 	{
-		//at commands go here
-		/***********/
-		/***********/
-		Tx_USART_ram_data("L2ON");
+		init_url(ip_stat2);
+		Tx_USART_ram_data("true");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 	}
 	
 	if((strcmp(control_2, light_status)==0)&&(strcmp(data_2,"1OFF")== 0))
 	{
-		//at commands go here
-		/***********/
-		/***********/
-		Tx_USART_ram_data("L1OFF");
+		init_url(ip_stat1);
+		Tx_USART_ram_data("false");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 	}
 	
 	if((strcmp(control_2, light_status)==0)&&(strcmp(data_2, "2OFF")== 0))
 	{
-		//at commands go here
-		/***********/
-		/***********/
-		Tx_USART_ram_data("L2OFF");
+		init_url(ip_stat2);
+		Tx_USART_ram_data("false");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
 	}
 	
 	
+	if((strcmp(control_2, init_status1)==0))
+	{
+		init_url(ip_initstat1);
+		Tx_USART_ram_data("true");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
+	}
+	
+	if((strcmp(control_2, init_status2)==0))
+	{
+		init_url(ip_initstat2);
+		Tx_USART_ram_data("true");
+		delay_2s();
+		Tx_USART_ram_data(post);
+		Tx_USART(carr_rtn);
+		delay_1s();
+	}
 }
 
 
@@ -515,13 +618,13 @@ void echo_off()
 /***************************send data through sms *******************************/
 /********************************************************************************/
 //be sure to set text mode before use
-void send_data_sms(char *control_3, char *data_3)
+void send_data_sms(char *message)
 {
 	Tx_USART_ram_data(num_cmd);
 	Tx_USART_ram_data(num);
 	Tx_USART(carr_rtn);
 	delay_10m();
-	send_data_url(control_3, data_3);
+	Tx_USART_ram_data(message);
 	delay_10m();
 	Tx_USART(ctrl_z);
 	delay_1s();
@@ -619,9 +722,11 @@ char* get_ctrl()
 // PIND2 Rx	(USART)
 // PINB0 key pin on GSM (active low output)
 // PINB1 resistor sensor enable (active low output)
+// PINB2 resistor sensor enable (active low output)
 // PINB7 pole 1 control (active high output)
 // PINB6 pole 2 control (active high output)
 // PINB3 over_voltage detect (active low input)
+// PINB4 over voltage detect (active low input)
 /********************************************************************************/
 
 int main(void)
@@ -633,7 +738,8 @@ int main(void)
 	char *cmd;				//command text
 	uint8_t point;
 	int i = 0;				//used for looping
-	uint8_t ov_detect;
+	uint8_t ov_detect1;
+	uint8_t ov_detect2;
 	//char temp1[8] = {"\0"};
 	//char temp2[8] = {"\0"};
 	//char *data1 = temp1;
@@ -674,8 +780,12 @@ int main(void)
 	
 	
 	Tx_USART(carr_rtn);					//incase of intermittent commands sent before
+	
 	delay_2s();
+	delay_2s();
+	ind = 0;
 	echo_off();
+	ind = 0;
 	delay_100m();
 	
 	
@@ -693,6 +803,13 @@ int main(void)
 	set_Textmode();
 	delete_sms();						//delete any commands received while off
 	ind = 0;							//in case text notifications received
+	
+	send_data_url(init_status1, "true");
+	delete_sms();
+	ind = 0;
+	send_data_url(init_status2, "true");
+	delete_sms();
+	ind = 0;
 	/**************************TESTING TEXT RECEIVE*****************************************/
 	//**************************PASSED!!!!!!!!!!!!!*****************************************/
 	//testing receiving of text messages
@@ -755,50 +872,96 @@ int main(void)
 	
 	//SHOULD SEND INITIAL STATUS OF LIGHTS TO IP ADDRESS
 	//
-	//
 	
+	//
+	//send status of light before sending data
+	/*********************************************/
+	/***********code goes here********************/
+	//
+	//****************MUST MUST MUST MUST HAVE HAVE HAVE HAVE***********************************/
+	//ov_detect1 = PINB;
+	//ov_detect2 = PINB;
+	//ov_detect1 &= OV_DETECT1;			//masking out the over voltage detect
+	//ov_detect2 &= OV_DETECT2;
 	//*************MUSTHAVE************************************///
 	//sending 10 data samples for each resistance
-	//for (i=0; i<10; i++)
-	//{
-		//change_input_ADC(POLE1);
-		//ov_detect = PINB;
-		//ov_detect &= OV_DETECT;			//masking out the over voltage detect
-		//if (!ov_detect)
+	for (i=0; i<10; i++)
+	{
+		//if (!ov_detect1)
 		//{
-			//PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
-			//send_data_url(pole_1, );
+			//PORTB |= RES_SENS_EN1;		//setting resistor enable high-->OFF
+			//if(!one_shot)
+			//{
+				//send_data_sms(bad_res, pole_1);
+				//send_data_sms();
+				//delete_sms();
+				//ind = 0;
+				//one_shot = 1;
+			//}
 		//}
-		//data_ch1 = read_ADC();
+		//if (!ov_detect2)
+		//{
+			//PORTB |= RES_SENS_EN2;
+			//if(!one_shot2)
+			//{
+				//send_data_sms(bad_res, pole_2);
+				//delete_sms();
+				//ind = 0;
+				//one_shot2 = 1;
+			//}
+		//}
+		change_input_ADC(POLE1);
+		data_ch1 = read_ADC();
 		//change_input_ADC(POLE2);		//pinf5
 		//data_ch2 = read_ADC();
-		//
-		//data1 = bin_ascii(data_ch1);	//converting to ascii string 0b"xxxxxxxx"
-		//data2 = bin_ascii(data_ch2);
-		//send_data_url(pole_1, data1);
+		bin_ascii(data_ch1, data1);	//converting to ascii string 0b"xxxxxxxx"
+		////data2 = bin_ascii(data_ch2);
+		send_data_url(pole_1, data1);
+		delete_sms();
+		ind = 0;
 		//send_data_url(pole_2, data2);
-	//}
+		//delete_sms();
+		//ind = 0;
+	}
 	//****************************************************************///
 	//
 	
 	//*********************************MAIN STATE MACHINE***************************************//
 	while(1)
 	{
-		ov_detect = PINB;
-		ov_detect &= OV_DETECT;			//masking out the over voltage detect
-	
-		if (!ov_detect)
+		ov_detect1 = PINB;
+		//ov_detect2 = PINB;
+		ov_detect1 &= OV_DETECT11;			//masking out the over voltage detect
+		//ov_detect2 &= OV_DETECT22;
+		if (!ov_detect1)
 		{
-			PORTB |= RES_SENS_EN;		//setting resistor enable high-->OFF
-			if(!one_shot)
-				{
-					send_data_sms(bad_res, pole_1);
-					delete_sms();
-					ind = 0;
-					one_shot = 1;
-				}
-		}	
 		
+			if(!one_shot)
+			{
+					PORTB |= RES_SENS_EN1;		//setting resistor enable high-->OFF
+				//send_data_url(bad_res, pole_1);
+				//ind = 0; 
+				//send_data_sms("POLE 1: OPEN CONTACT");
+				//delete_sms();
+				//ind = 0;
+				//one_shot = 1;
+			}
+		}
+		//if (!ov_detect2)
+		//{
+			//
+			//if(!one_shot2)
+			//{
+				//PORTB |= RES_SENS_EN2;
+				////send_data_url(bad_res, pole_2);
+				//ind = 0;
+				////send_data_sms("POLE 2: OPEN CONTACT");
+				//delete_sms();
+				//ind = 0;
+				//one_shot2 = 1;
+			//}
+		//}	
+		//
 		if(ind > 13)
 		{
 			cmd_reg = data_received[14];  //location in sms received reply string with data register location
@@ -808,55 +971,75 @@ int main(void)
 				ind = 0;
 				cmd = get_ctrl();
 				cmd_word = *cmd;
-				if(cmd_word > 64 && cmd_word < 74)  //A through I capitols matter!!!
+				if(cmd_word > 64 && cmd_word < 76)  //A through I capitols matter!!!
 				{
 					delete_sms();
 					delay_2s();
 					switch (cmd_word)
 					{
-						case LIGHT_1_CTRL_OFF:
-							PORTB &= ~CTRL_1;
-							send_data_sms(light_status, "1OFF");
-							delete_sms();
-							ind = 0;
-						break;
 						case LIGHT_1_CTRL_ON:
-							PORTB |= CTRL_1;
-							send_data_sms(light_status, pole_1);
+							PORTB &= ~CTRL_1;
+							send_data_url(light_status, pole_1);
 							delete_sms();
 							ind = 0;
 						break;
-						case LIGHT_2_CTRL_OFF:
-							PORTB &= ~CTRL_2;
-							send_data_sms(light_status, "2OFF");
+						case LIGHT_1_CTRL_OFF:
+							PORTB |= CTRL_1;
+							send_data_url(light_status, "1OFF");
 							delete_sms();
 							ind = 0;
 						break;
 						case LIGHT_2_CTRL_ON:
-							PORTB |= CTRL_2;
-							send_data_sms(light_status, pole_2);
+							PORTB &= ~CTRL_2;
+							send_data_url(light_status, pole_2);
 							delete_sms();
 							ind = 0;
 						break;
-						case LIGHTS_OFF:
-							PORTB &= ~CTRL_1;
-							PORTB &= ~CTRL_2;
-							send_data_sms(light_status, "1OFF");
-							delete_sms();
-							ind = 0;
-							
-							send_data_sms(light_status, "2OFF");
+						case LIGHT_2_CTRL_OFF:
+							PORTB |= CTRL_2;
+							send_data_url(light_status, "2OFF");
 							delete_sms();
 							ind = 0;
 						break;
 						case LIGHTS_ON:
-							PORTB |= CTRL_1;
-							PORTB |= CTRL_2;
-							send_data_sms(light_status, pole_1);
+							PORTB &= ~CTRL_1;
+							PORTB &= ~CTRL_2;
+							send_data_url(light_status, pole_1);
 							delete_sms();
 							ind = 0;
 							
-							send_data_sms(light_status, pole_2);
+							send_data_url(light_status, pole_2);
+							delete_sms();
+							ind = 0;
+						break;
+						case LIGHTS_OFF:
+							PORTB |= CTRL_1;
+							PORTB |= CTRL_2;
+							send_data_url(light_status, "1OFF");
+							delete_sms();
+							ind = 0;
+							
+							send_data_url(light_status, "2OFF");
+							delete_sms();
+							ind = 0;
+						break;
+						case LIGHT2_ON_LIGHT1_OFF:
+							PORTB |= CTRL_1;
+							PORTB &= ~CTRL_2;
+							send_data_url(light_status, "1OFF");
+							delete_sms();
+							ind = 0;
+							send_data_url(light_status, pole_2);
+							delete_sms();
+							ind = 0;
+						break;
+						case LIGHT1_ON_LIGHT2_OFF:
+							PORTB &= ~CTRL_1;
+							PORTB |= CTRL_2;
+							send_data_url(light_status, pole_1);
+							delete_sms();
+							ind = 0;
+							send_data_url(light_status, "2OFF");
 							delete_sms();
 							ind = 0;
 						break;
@@ -864,7 +1047,7 @@ int main(void)
 							change_input_ADC(POLE1);
 							data_ch1 = read_ADC();
 							//bin_ascii(data_ch1, data1);
-							send_data_sms(pole_1, data1);
+							send_data_url(pole_1, data1);
 							delete_sms();
 							ind = 0;
 						break;
@@ -872,7 +1055,7 @@ int main(void)
 							change_input_ADC(POLE2);
 							data_ch2 = read_ADC();
 							//bin_ascii(data_ch2, data2);
-							send_data_sms(pole_2, data2);
+							send_data_url(pole_2, data2);
 							delete_sms();
 							ind = 0;
 						break;
@@ -880,20 +1063,18 @@ int main(void)
 							change_input_ADC(POLE1);
 							data_ch1 = read_ADC();
 							//bin_ascii(data_ch1, data1);
-							send_data_sms(pole_1, data1);
+							send_data_url(pole_1, data1);
 							delete_sms();
 							ind = 0;
-							change_input_ADC(POLE2);
-							data_ch2 = read_ADC();
-							//bin_ascii(data_ch2, data2);
-							send_data_sms(pole_2, data2);
-							delete_sms();
-							ind = 0;
+							//change_input_ADC(POLE2);
+							//data_ch2 = read_ADC();
+							////bin_ascii(data_ch2, data2);
+							//send_data_url(pole_2, data2);
+							//delete_sms();
+							//ind = 0;
 						break;
 						default:
-							while(1){
-							Tx_USART_ram_data("SOS");
-							}
+							send_data_sms("NOT WORKING");
 							delete_sms();
 							ind = 0;
 						break;
